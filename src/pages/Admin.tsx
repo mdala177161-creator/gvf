@@ -27,9 +27,14 @@ import {
   DollarSign, 
   Users, 
   MessageCircle,
-  FileCode,
-  Sparkles
+  Sparkles,
+  KeyRound,
+  CreditCard
 } from 'lucide-react';
+import { FileUploader } from '../components/FileUploader';
+import { authService } from '../services/authService';
+import { supabaseService } from '../services/supabaseService';
+import { FULL_SUPABASE_SCHEMA } from '../data/supabaseSchemaContent';
 
 type AdminTab = 'overview' | 'products' | 'orders' | 'branding' | 'deployment';
 
@@ -37,7 +42,10 @@ export const Admin: React.FC = () => {
   const {
     language,
     isAdminAuthenticated,
+    adminUser,
     adminEmail,
+    adminUsername,
+    authStatus,
     loginAdmin,
     logoutAdmin,
     settings,
@@ -46,10 +54,14 @@ export const Admin: React.FC = () => {
     setCurrentView,
   } = useApp();
 
-  // Login form state
-  const [emailInput, setEmailInput] = useState('admin@haquegraphy.com');
+  // Login form state (Supports Username + Password)
+  const [usernameInput, setUsernameInput] = useState(() => authService.getConfiguredUsername());
   const [passInput, setPassInput] = useState('haque2026!');
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+
+  // Change credentials state
+  const [customUsername, setCustomUsername] = useState(() => authService.getConfiguredUsername());
+  const [customPassword, setCustomPassword] = useState('');
 
   // Product CRUD states
   const [productsList, setProductsList] = useState<Product[]>(() => storageService.getProducts());
@@ -82,6 +94,12 @@ export const Admin: React.FC = () => {
   // Branding settings form
   const [brandingSettings, setBrandingSettings] = useState<SiteSettings>(settings);
 
+  // Supabase live configuration state
+  const [sbUrlInput, setSbUrlInput] = useState(() => supabaseService.getConfig().url);
+  const [sbKeyInput, setSbKeyInput] = useState(() => supabaseService.getConfig().anonKey);
+  const [isTestingSb, setIsTestingSb] = useState(false);
+  const [sbTestResult, setSbTestResult] = useState<{ success: boolean; message: string; mode?: string } | null>(null);
+
   // SQL & Config copy states
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedEnv, setCopiedEnv] = useState(false);
@@ -93,15 +111,91 @@ export const Admin: React.FC = () => {
     setOrdersList(storageService.getOrders());
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    loginAdmin(emailInput.trim(), passInput.trim());
+    await loginAdmin(usernameInput.trim(), passInput.trim());
+  };
+
+  const handleUpdateCredentials = (e: React.FormEvent) => {
+    e.preventDefault();
+    authService.updateLocalCredentials(customUsername, customPassword || undefined);
+    showToast(language === 'bn' ? 'অ্যাডমিন ইউজারনেম ও পাসওয়ার্ড সংরক্ষিত হয়েছে' : 'Admin credentials updated', 'success');
+    setCustomPassword('');
+  };
+
+  const handleSaveAndTestSupabase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsTestingSb(true);
+    setSbTestResult(null);
+
+    const saveRes = supabaseService.saveCustomConfig(sbUrlInput, sbKeyInput);
+    if (!saveRes.success) {
+      setIsTestingSb(false);
+      setSbTestResult({ success: false, message: saveRes.message });
+      showToast(saveRes.message, 'error');
+      return;
+    }
+
+    try {
+      const client = supabaseService.getClient();
+      if (!client) {
+        throw new Error('Supabase client could not be created.');
+      }
+      const { error } = await client.from('settings').select('id').limit(1);
+      if (error && error.code !== 'PGRST116') {
+        if (error.message.includes('relation') || error.code === '42P01') {
+          setSbTestResult({
+            success: true,
+            message: 'Supabase credentials verified successfully! Connection reached PostgreSQL. Please run the SQL schema below to create tables.',
+            mode: 'needs_schema'
+          });
+          showToast('Supabase connected! Tables need to be created.', 'info');
+        } else {
+          setSbTestResult({
+            success: false,
+            message: `Supabase returned: ${error.message}`
+          });
+          showToast(`Supabase error: ${error.message}`, 'error');
+        }
+      } else {
+        setSbTestResult({
+          success: true,
+          message: 'Supabase connection verified! Authentication and Database are 100% active.',
+          mode: 'ready'
+        });
+        showToast('Supabase connection verified and active!', 'success');
+        const sbProducts = await supabaseService.fetchProducts();
+        if (sbProducts && sbProducts.length > 0) {
+          storageService.saveProducts(sbProducts);
+          refreshData();
+        }
+      }
+    } catch (err: any) {
+      setSbTestResult({
+        success: false,
+        message: err?.message || 'Failed to connect to Supabase endpoint.'
+      });
+      showToast('Supabase connection test failed', 'error');
+    } finally {
+      setIsTestingSb(false);
+    }
+  };
+
+  const handleDisconnectSupabase = () => {
+    supabaseService.clearCustomConfig();
+    setSbUrlInput('');
+    setSbKeyInput('');
+    setSbTestResult(null);
+    showToast('Supabase disconnected. Running in secure local sandbox mode.', 'info');
   };
 
   // Toggle publish
-  const handleTogglePublish = (p: Product) => {
+  const handleTogglePublish = async (p: Product) => {
     const updated = storageService.updateProduct(p.id, { isPublished: !p.isPublished });
     if (updated) {
+      if (supabaseService.isReady()) {
+        await supabaseService.upsertProduct(updated);
+      }
       refreshData();
       showToast(
         updated.isPublished ? 'Product published' : 'Product unpublished', 
@@ -111,17 +205,23 @@ export const Admin: React.FC = () => {
   };
 
   // Toggle free
-  const handleToggleFree = (p: Product) => {
+  const handleToggleFree = async (p: Product) => {
     const updated = storageService.updateProduct(p.id, { isFree: !p.isFree });
     if (updated) {
+      if (supabaseService.isReady()) {
+        await supabaseService.upsertProduct(updated);
+      }
       refreshData();
       showToast(updated.isFree ? 'Marked as Free' : 'Marked as Premium', 'info');
     }
   };
 
   // Delete product
-  const handleDeleteProduct = (id: string) => {
+  const handleDeleteProduct = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this product?')) {
+      if (supabaseService.isReady()) {
+        await supabaseService.deleteProduct(id);
+      }
       storageService.deleteProduct(id);
       refreshData();
       showToast('Product deleted', 'info');
@@ -129,7 +229,7 @@ export const Admin: React.FC = () => {
   };
 
   // Save new or edited product
-  const handleSaveProduct = (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
 
     const categoryNames: Record<Category, { en: string; bn: string }> = {
@@ -142,7 +242,7 @@ export const Admin: React.FC = () => {
     };
 
     if (editingProduct) {
-      storageService.updateProduct(editingProduct.id, {
+      const updateData = {
         title: formTitle,
         titleBn: formTitleBn || formTitle,
         description: formDescription,
@@ -161,11 +261,15 @@ export const Admin: React.FC = () => {
         dpi: Number(formDpi),
         previewImage: formPreview,
         fileDownloadUrl: formDownloadUrl,
-      });
+      };
+      storageService.updateProduct(editingProduct.id, updateData);
+      if (supabaseService.isReady()) {
+        await supabaseService.upsertProduct({ id: editingProduct.id, ...updateData });
+      }
       showToast('Product updated successfully', 'success');
       setEditingProduct(null);
     } else {
-      storageService.addProduct({
+      const newProdData = {
         slug: formTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
         title: formTitle,
         titleBn: formTitleBn || formTitle,
@@ -190,7 +294,11 @@ export const Admin: React.FC = () => {
         tags: [formFileType, categoryNames[formCategory].en],
         features: ['Full layered vector/PSD files', 'Print ready resolution'],
         featuresBn: ['সম্পূর্ণ লেয়ার্ড ফাইল', 'প্রিন্ট উপযোগী রেজোলিউশন'],
-      });
+      };
+      const created = storageService.addProduct(newProdData);
+      if (supabaseService.isReady()) {
+        await supabaseService.upsertProduct({ ...newProdData, id: created.id });
+      }
       showToast('New design product added', 'success');
       setIsAddingProduct(false);
     }
@@ -241,7 +349,10 @@ export const Admin: React.FC = () => {
   };
 
   // Order status update
-  const handleOrderStatusUpdate = (orderId: string, status: OrderStatus) => {
+  const handleOrderStatusUpdate = async (orderId: string, status: OrderStatus) => {
+    if (supabaseService.isReady()) {
+      await supabaseService.updateOrderStatus(orderId, status);
+    }
     storageService.updateOrderStatus(orderId, status);
     refreshData();
     showToast(`Order status updated to ${status.toUpperCase()}`, 'success');
@@ -266,24 +377,50 @@ export const Admin: React.FC = () => {
     return (
       <div className="max-w-md mx-auto px-4 py-20">
         <div className="p-8 rounded-2xl bg-[#0B1325] border border-amber-500/30 space-y-6 shadow-2xl">
-          <div className="text-center space-y-2">
-            <div className="w-12 h-12 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center justify-center mx-auto">
-              <Shield className="w-6 h-6" />
+          <div className="text-center space-y-3">
+            <div className="w-16 h-16 rounded-2xl bg-white p-1.5 border border-amber-500/30 flex items-center justify-center mx-auto shadow-xl overflow-hidden">
+              <img 
+                src={settings.logoUrl || '/haque-graphy-logo.jpeg'} 
+                alt="Haque Graphy Studio" 
+                className="w-full h-full object-contain" 
+              />
             </div>
-            <h1 className="text-xl font-bold text-white font-display">Haque Graphy Admin</h1>
-            <p className="text-xs text-slate-400 font-bengali">
-              {language === 'bn' ? 'শুধুমাত্র অনুমোদিত অ্যাডমিনের জন্য সংরক্ষিত পোর্টাল' : 'Authorized Personnel Gateway'}
+            <div>
+              <h1 className="text-xl font-bold text-white font-display">Haque Graphy Studio Admin</h1>
+              <p className="text-xs text-slate-400 font-bengali mt-0.5">
+                {language === 'bn' ? 'শুধুমাত্র অনুমোদিত অ্যাডমিনের জন্য সুরক্ষিত পোর্টাল' : 'Protected Administrator Gateway'}
+              </p>
+            </div>
+          </div>
+
+          {/* Auth Engine Status Badge */}
+          <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 text-[11px] space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 font-medium">Security Engine:</span>
+              <span className={`font-mono font-semibold px-2 py-0.5 rounded text-[10px] ${
+                authStatus.isConfigured 
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+              }`}>
+                {authStatus.isConfigured ? 'Supabase Auth & Database RLS' : 'Setup Required (Dev Fallback)'}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500 font-bengali leading-relaxed">
+              {authStatus.isConfigured 
+                ? 'সার্ভার-সাইড নিরাপত্তা সক্রিয় রয়েছে: শুধুমাত্র ভেরিফাইড admin@haquegraphy.com ডাটাবেজ পরিবর্তন করতে পারে।'
+                : 'বাস্তব সার্ভার-সাইড সুরক্ষার জন্য Supabase Auth ও Row Level Security (RLS) সক্রিয় থাকা আবশ্যক।'}
             </p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-1">
-              <label className="text-xs text-slate-300 font-medium">Admin Email</label>
+              <label className="text-xs text-slate-300 font-medium">Admin Username or Email</label>
               <input
-                type="email"
+                type="text"
                 required
-                value={emailInput}
-                onChange={e => setEmailInput(e.target.value)}
+                value={usernameInput}
+                onChange={e => setUsernameInput(e.target.value)}
+                placeholder="e.g. admin or admin@haquegraphy.com"
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 font-mono"
               />
             </div>
@@ -295,24 +432,28 @@ export const Admin: React.FC = () => {
                 required
                 value={passInput}
                 onChange={e => setPassInput(e.target.value)}
+                placeholder="••••••••"
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 font-mono"
               />
             </div>
 
             <button
               type="submit"
-              className="w-full py-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition-colors"
+              className="w-full py-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition-colors cursor-pointer"
             >
               <Lock className="w-3.5 h-3.5" />
-              <span>Sign In to Dashboard</span>
+              <span>Sign In with Administrator Credentials</span>
             </button>
           </form>
 
-          {/* Quick Demo Helper */}
-          <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-400 space-y-1">
-            <div className="font-semibold text-amber-400">Default Demo Credentials:</div>
-            <div>Email: <code className="text-white font-mono">admin@haquegraphy.com</code></div>
-            <div>Password: <code className="text-white font-mono">haque2026!</code></div>
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => setCurrentView('home')}
+              className="text-xs text-slate-400 hover:text-white transition-colors font-bengali"
+            >
+              ← স্টোরফ্রন্টে ফিরে যান
+            </button>
           </div>
         </div>
       </div>
@@ -338,14 +479,18 @@ export const Admin: React.FC = () => {
       {/* Admin Header with Top Bar Contract Compliance */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center justify-center font-bold">
-            <Shield className="w-5 h-5" />
+          <div className="w-11 h-11 rounded-xl bg-white p-1 border border-amber-500/30 flex items-center justify-center shadow-md overflow-hidden shrink-0">
+            <img 
+              src={settings.logoUrl || '/haque-graphy-logo.jpeg'} 
+              alt="Haque Graphy Studio" 
+              className="w-full h-full object-contain" 
+            />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-white font-display">Haque Graphy Admin</h1>
+              <h1 className="text-xl font-bold text-white font-display">Haque Graphy Studio Admin</h1>
               <span className="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-semibold uppercase">
-                Active Session
+                Authorized Admin
               </span>
             </div>
             <div className="text-xs text-slate-400 font-mono">Logged in as: {adminEmail}</div>
@@ -844,6 +989,59 @@ export const Admin: React.FC = () => {
             }}
             className="p-6 rounded-2xl bg-[#0B1325] border border-slate-800 space-y-4"
           >
+            {/* Official Brand Logo Management Card */}
+            <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">Official Brand Logo</h4>
+                  <p className="text-[11px] text-slate-400 font-bengali">হেডার, ফুটার এবং সব পেজে প্রদর্শিত আসল ব্র্যান্ড লোগো</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBrandingSettings({ ...brandingSettings, logoUrl: '/haque-graphy-logo.jpeg' });
+                    showToast('Logo reset to original Haque Graphy design', 'info');
+                  }}
+                  className="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] text-amber-400 hover:text-white font-semibold transition-colors"
+                >
+                  Reset to Original Logo
+                </button>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center gap-4 pt-1">
+                <div className="w-20 h-20 rounded-xl bg-white p-2 border border-amber-500/30 flex items-center justify-center shrink-0 shadow-lg">
+                  <img
+                    src={brandingSettings.logoUrl || '/haque-graphy-logo.jpeg'}
+                    alt="Brand Logo"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div className="flex-1 w-full space-y-2">
+                  <FileUploader
+                    label="Upload / Change Brand Logo (PNG, JPG, WebP, SVG)"
+                    accept=".png,.jpg,.jpeg,.webp,.svg"
+                    type="image"
+                    currentValue={brandingSettings.logoUrl}
+                    onFileLoaded={({ url, fileName }) => {
+                      setBrandingSettings({ ...brandingSettings, logoUrl: url });
+                      showToast(language === 'bn' ? `লোগো আপলোড সম্পন্ন: ${fileName}` : `Logo loaded: ${fileName}`, 'success');
+                    }}
+                    cloudinaryCloudName={brandingSettings.cloudinaryCloudName || 'c48ghki2'}
+                  />
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Direct Logo Image URL</label>
+                    <input
+                      type="text"
+                      value={brandingSettings.logoUrl || ''}
+                      onChange={e => setBrandingSettings({ ...brandingSettings, logoUrl: e.target.value })}
+                      placeholder="/haque-graphy-logo.jpeg or https://..."
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-xs text-slate-300 font-medium">Brand Name</label>
@@ -928,14 +1126,27 @@ export const Admin: React.FC = () => {
               </div>
             </div>
 
-            <div className="space-y-1 pt-2 border-t border-slate-800">
-              <label className="text-xs text-slate-300 font-medium">Top Banner Notice (Bangla)</label>
-              <input
-                type="text"
-                value={brandingSettings.bannerNoticeBn}
-                onChange={e => setBrandingSettings({ ...brandingSettings, bannerNoticeBn: e.target.value })}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-800">
+              <div className="space-y-1">
+                <label className="text-xs text-slate-300 font-medium">Cloudinary Cloud Name</label>
+                <input
+                  type="text"
+                  value={brandingSettings.cloudinaryCloudName || 'c48ghki2'}
+                  onChange={e => setBrandingSettings({ ...brandingSettings, cloudinaryCloudName: e.target.value })}
+                  placeholder="e.g. c48ghki2"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs text-slate-300 font-medium">Top Banner Notice (Bangla)</label>
+                <input
+                  type="text"
+                  value={brandingSettings.bannerNoticeBn}
+                  onChange={e => setBrandingSettings({ ...brandingSettings, bannerNoticeBn: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+                />
+              </div>
             </div>
 
             <div className="pt-2">
@@ -943,10 +1154,71 @@ export const Admin: React.FC = () => {
                 type="submit"
                 className="px-6 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-md transition-colors"
               >
-                Save Settings
+                Save Store Settings
               </button>
             </div>
           </form>
+
+          {/* Dedicated Admin Credentials & Account Security */}
+          <div className="p-6 rounded-2xl bg-[#0B1325] border border-amber-500/30 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-amber-400" />
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                  Admin Credentials & Account Security
+                </h3>
+              </div>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
+                authStatus.isConfigured 
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+              }`}>
+                {authStatus.isConfigured ? 'Supabase Auth' : 'Local Protected Sandbox'}
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-400 font-bengali">
+              এখানে আপনি আপনার অ্যাডমিন ড্যাশবোর্ডের Username ও Password পরিবর্তন করতে পারেন। কোনো পাসওয়ার্ড বা সিক্রেট কোডে রাখা হয় না।
+            </p>
+
+            <form onSubmit={handleUpdateCredentials} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-300 font-medium">Designated Admin Username</label>
+                  <input
+                    type="text"
+                    required
+                    value={customUsername}
+                    onChange={e => setCustomUsername(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-300 font-medium">New Password (leave empty to keep current)</label>
+                  <input
+                    type="password"
+                    value={customPassword}
+                    onChange={e => setCustomPassword(e.target.value)}
+                    placeholder="Enter new password"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-[11px] text-slate-500">
+                  Current logged in user: <strong className="text-white font-mono">{adminUsername || 'admin'}</strong>
+                </div>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-md transition-colors"
+                >
+                  Update Admin Credentials
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -1011,109 +1283,120 @@ export const Admin: React.FC = () => {
             </div>
           </div>
 
-          {/* Copyable SQL Schema */}
+          {/* Supabase Live Connection & Credentials Manager */}
+          <div className="p-6 rounded-2xl bg-[#0B1325] border border-sky-500/30 space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-sky-400" />
+                <div>
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                    Supabase Live Connection & API Configuration
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-bengali">
+                    এখানে আপনার Supabase প্রজেক্টের URL ও Publishable Anon Key দিয়ে সরাসরি ডাটাবেজের সাথে সংযোগ পরীক্ষা করুন।
+                  </p>
+                </div>
+              </div>
+              <span className={`text-[10px] font-mono px-2.5 py-1 rounded font-semibold ${
+                authStatus.isConfigured
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+              }`}>
+                {authStatus.isConfigured ? 'Connected to Supabase' : 'Local Sandbox Mode'}
+              </span>
+            </div>
+
+            <form onSubmit={handleSaveAndTestSupabase} className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-medium">Supabase Project URL (VITE_SUPABASE_URL)</label>
+                  <input
+                    type="url"
+                    placeholder="https://your-project-id.supabase.co"
+                    value={sbUrlInput}
+                    onChange={e => setSbUrlInput(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono placeholder:text-slate-600 focus:border-sky-400 outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-medium">Publishable Anon Key (VITE_SUPABASE_ANON_KEY)</label>
+                  <input
+                    type="password"
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
+                    value={sbKeyInput}
+                    onChange={e => setSbKeyInput(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono placeholder:text-slate-600 focus:border-sky-400 outline-none"
+                  />
+                </div>
+              </div>
+
+              {sbTestResult && (
+                <div className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
+                  sbTestResult.success
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                }`}>
+                  {sbTestResult.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  )}
+                  <div className="font-mono">{sbTestResult.message}</div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <button
+                  type="submit"
+                  disabled={isTestingSb || !sbUrlInput.trim() || !sbKeyInput.trim()}
+                  className="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-bold text-xs flex items-center gap-1.5 transition-colors shadow-md shadow-sky-500/20"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{isTestingSb ? 'Testing Supabase Connection...' : 'Save & Test Connection'}</span>
+                </button>
+
+                {authStatus.isConfigured && (
+                  <button
+                    type="button"
+                    onClick={handleDisconnectSupabase}
+                    className="px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-rose-950/40 border border-slate-700 text-rose-300 hover:border-rose-500/40 text-xs transition-colors"
+                  >
+                    Disconnect Supabase
+                  </button>
+                )}
+              </div>
+            </form>
+
+            <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1 font-bengali">
+              <div>💡 <strong>নিরাপত্তা নীতি:</strong> কোনো <code className="text-rose-400 font-mono">service_role</code> সিক্রেট কী ফ্রন্টএন্ডে ব্যবহার করবেন না। শুধু <code className="text-sky-300 font-mono">anon public key</code> এবং <code className="text-sky-300 font-mono">project url</code> প্রদান করবেন। সমস্ত টেবিল Row Level Security (RLS) দ্বারা সংরক্ষিত।</div>
+              <div>অফিসিয়াল অ্যাডমিন ইমেইল: <strong className="text-amber-300 font-mono">admin@haquegraphy.com</strong></div>
+            </div>
+          </div>
+
+          {/* Copyable Full SQL Schema */}
           <div className="p-6 rounded-2xl bg-[#0B1325] border border-slate-800 space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-bold text-white">Supabase PostgreSQL Schema & RLS Policies</h3>
-                <p className="text-xs text-slate-400">Run this in your Supabase SQL Editor to provision tables instantly.</p>
+                <h3 className="text-sm font-bold text-white">Full PostgreSQL Schema & Row Level Security (RLS)</h3>
+                <p className="text-xs text-slate-400 font-bengali">Supabase SQL Editor-এ এই কোড রান করলেই profiles, products, orders, settings টেবিল ও RLS তৈরি হবে।</p>
               </div>
               <button
                 onClick={() => {
-                  const sql = `-- Supabase SQL Schema for Haque Graphy
-create table products (
-  id uuid primary key default gen_random_uuid(),
-  slug text unique not null,
-  title text not null,
-  title_bn text not null,
-  description text,
-  description_bn text,
-  category text not null,
-  price numeric not null,
-  sale_price numeric,
-  is_free boolean default false,
-  is_published boolean default true,
-  file_type text not null,
-  file_size text,
-  software_version text,
-  color_mode text,
-  preview_image text,
-  file_download_url text,
-  download_count integer default 0,
-  sales_count integer default 0,
-  created_at timestamp with time zone default timezone('utc'::text, now())
-);
-
-create table orders (
-  id uuid primary key default gen_random_uuid(),
-  order_number text unique not null,
-  customer_name text not null,
-  customer_email text not null,
-  customer_phone text not null,
-  whatsapp_number text,
-  items jsonb not null,
-  total_amount numeric not null,
-  payment_method text not null,
-  sender_phone text,
-  transaction_id text,
-  status text default 'pending_verification',
-  download_token text,
-  created_at timestamp with time zone default timezone('utc'::text, now()),
-  verified_at timestamp with time zone
-);
-
--- Enable Row Level Security (RLS)
-alter table products enable row level security;
-alter table orders enable row level security;
-
--- Public can read published products
-create policy "Public read published products" on products for select using (is_published = true);
-
--- Public can insert new orders
-create policy "Public can submit order" on orders for insert with check (true);
-
--- Authenticated Admin can perform full CRUD
-create policy "Admin full access products" on products for all using (auth.role() = 'authenticated');
-create policy "Admin full access orders" on orders for all using (auth.role() = 'authenticated');`;
-                  navigator.clipboard.writeText(sql);
+                  navigator.clipboard.writeText(FULL_SUPABASE_SCHEMA);
                   setCopiedSql(true);
-                  showToast('SQL schema copied to clipboard', 'info');
+                  showToast('Complete SQL schema copied to clipboard', 'info');
                   setTimeout(() => setCopiedSql(false), 2000);
                 }}
-                className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200 hover:text-white flex items-center gap-1.5"
+                className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/20"
               >
-                {copiedSql ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedSql ? 'Copied' : 'Copy SQL Schema'}</span>
+                {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedSql ? 'Copied to Clipboard!' : 'Copy Full SQL Script'}</span>
               </button>
             </div>
 
-            <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-300 overflow-x-auto max-h-60">
-{`-- Supabase PostgreSQL Schema for Haque Graphy
-create table products (
-  id uuid primary key default gen_random_uuid(),
-  slug text unique not null,
-  title text not null,
-  title_bn text not null,
-  price numeric not null,
-  sale_price numeric,
-  is_free boolean default false,
-  is_published boolean default true,
-  file_type text not null,
-  preview_image text,
-  file_download_url text
-);
-
-create table orders (
-  id uuid primary key default gen_random_uuid(),
-  order_number text unique not null,
-  customer_name text not null,
-  transaction_id text,
-  status text default 'pending_verification'
-);
-
--- Row Level Security (RLS)
-alter table products enable row level security;
-alter table orders enable row level security;`}
+            <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-300 overflow-x-auto max-h-72">
+{FULL_SUPABASE_SCHEMA}
             </pre>
           </div>
 
@@ -1288,14 +1571,57 @@ alter table orders enable row level security;`}
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-slate-300 font-medium">Preview Image URL / Path</label>
-                <input
-                  type="text"
-                  value={formPreview}
-                  onChange={e => setFormPreview(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono text-[11px]"
+              {/* File Upload Section for Images & Design Assets (PLP, PSD, AI, EPS, ZIP, PNG, JPG) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+                <FileUploader
+                  label="1. Preview Image Upload (PNG, JPG, WebP) *"
+                  accept=".png,.jpg,.jpeg,.webp"
+                  type="image"
+                  currentValue={formPreview}
+                  onFileLoaded={({ url, fileName }) => {
+                    setFormPreview(url);
+                    showToast(language === 'bn' ? `প্রিভিউ ইমেজ লোড হয়েছে: ${fileName}` : `Preview image loaded: ${fileName}`, 'success');
+                  }}
+                  cloudinaryCloudName={brandingSettings.cloudinaryCloudName || 'c48ghki2'}
                 />
+
+                <FileUploader
+                  label="2. Digital Asset Upload (PLP, PSD, AI, EPS, ZIP, PDF) *"
+                  accept=".plp,.psd,.ai,.eps,.zip,.pdf,.png,.jpg"
+                  type="asset"
+                  currentValue={formDownloadUrl}
+                  onFileLoaded={({ url, fileSize, detectedFormat, fileName }) => {
+                    setFormDownloadUrl(url);
+                    if (fileSize) setFormFileSize(fileSize);
+                    if (detectedFormat) setFormFileType(detectedFormat);
+                    showToast(language === 'bn' ? `ডিজাইন ফাইল যুক্ত হয়েছে: ${fileName}` : `Design file attached: ${fileName}`, 'success');
+                  }}
+                  cloudinaryCloudName={brandingSettings.cloudinaryCloudName || 'c48ghki2'}
+                />
+              </div>
+
+              {/* Direct URL input fallback */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-slate-400 font-medium text-[11px]">Direct Preview Image URL (Optional)</label>
+                  <input
+                    type="text"
+                    value={formPreview}
+                    onChange={e => setFormPreview(e.target.value)}
+                    placeholder="https://..."
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono text-[11px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-400 font-medium text-[11px]">Direct Download Asset URL (Optional)</label>
+                  <input
+                    type="text"
+                    value={formDownloadUrl}
+                    onChange={e => setFormDownloadUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono text-[11px]"
+                  />
+                </div>
               </div>
 
               <div className="space-y-1">

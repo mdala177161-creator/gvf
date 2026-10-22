@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { Product, CartItem, Order, SiteSettings, Language, Category, FileFormat } from '../types';
 import { storageService } from '../services/storageService';
+import { authService, AdminUser, AuthStatus } from '../services/authService';
 
 export type AppView = 
   | 'home' 
@@ -58,9 +59,12 @@ interface AppContextType {
 
   // Admin Auth
   isAdminAuthenticated: boolean;
+  adminUser: AdminUser | null;
   adminEmail: string | null;
-  loginAdmin: (email: string, pass: string) => boolean;
-  logoutAdmin: () => void;
+  adminUsername: string | null;
+  authStatus: AuthStatus;
+  loginAdmin: (identifier: string, pass: string) => Promise<boolean>;
+  logoutAdmin: () => Promise<void>;
 
   // Toast
   toasts: Toast[];
@@ -102,12 +106,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [settings, setSettings] = useState<SiteSettings>(() => storageService.getSettings());
 
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('haque_admin_auth') === 'true';
-  });
-  const [adminEmail, setAdminEmail] = useState<string | null>(() => {
-    return localStorage.getItem('haque_admin_email') || null;
-  });
+  const [adminUser, setAdminUser] = useState<AdminUser | null>(() => authService.getCurrentUser());
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => authService.getAuthStatus());
+  const isAdminAuthenticated = Boolean(adminUser && adminUser.isAdmin);
+  const adminEmail = adminUser?.email || null;
+  const adminUsername = adminUser?.username || null;
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [lastCreatedOrder, setLastCreatedOrder] = useState<Order | null>(null);
@@ -233,25 +236,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast(language === 'bn' ? 'সেটিংস সংরক্ষিত হয়েছে' : 'Settings updated', 'success');
   };
 
-  const loginAdmin = (email: string, pass: string): boolean => {
-    // Valid admin credentials (or quick test credentials)
-    if (email === 'admin@haquegraphy.com' && pass === 'haque2026!') {
-      setIsAdminAuthenticated(true);
-      setAdminEmail(email);
-      localStorage.setItem('haque_admin_auth', 'true');
-      localStorage.setItem('haque_admin_email', email);
-      showToast(language === 'bn' ? 'অ্যাডমিন লগইন সফল হয়েছে' : 'Admin logged in successfully', 'success');
+  const loginAdmin = async (identifier: string, pass: string): Promise<boolean> => {
+    const res = await authService.login(identifier, pass);
+    if (res.success && res.user) {
+      setAdminUser(res.user);
+      setAuthStatus(authService.getAuthStatus());
+      showToast(
+        language === 'bn' ? `স্বাগতম, ${res.user.username}! অ্যাডমিন লগইন সফল হয়েছে` : `Welcome, ${res.user.username}! Admin logged in`, 
+        'success'
+      );
       return true;
     }
-    showToast(language === 'bn' ? 'ভুল ইমেইল বা পাসওয়ার্ড' : 'Invalid credentials', 'error');
+    showToast(
+      res.error || (language === 'bn' ? 'ভুল ইউজারনেম বা পাসওয়ার্ড' : 'Invalid credentials'), 
+      'error'
+    );
     return false;
   };
 
-  const logoutAdmin = () => {
-    setIsAdminAuthenticated(false);
-    setAdminEmail(null);
-    localStorage.removeItem('haque_admin_auth');
-    localStorage.removeItem('haque_admin_email');
+  const logoutAdmin = async () => {
+    await authService.logout();
+    setAdminUser(null);
     showToast(language === 'bn' ? 'লগআউট সফল হয়েছে' : 'Logged out', 'info');
     setCurrentView('home');
   };
@@ -295,7 +300,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         settings,
         updateSettings,
         isAdminAuthenticated,
+        adminUser,
         adminEmail,
+        adminUsername,
+        authStatus,
         loginAdmin,
         logoutAdmin,
         toasts,

@@ -84,6 +84,8 @@ export interface SiteSettings {
   bannerNotice: string;
   bannerNoticeBn: string;
   isBannerActive: boolean;
+  cloudinaryCloudName?: string;
+  logoUrl?: string;
 }
 
 export type Language = 'bn' | 'en';

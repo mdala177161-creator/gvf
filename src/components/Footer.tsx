@@ -75,11 +75,15 @@ export const Footer: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-10">
           {/* Brand info */}
           <div className="md:col-span-2 space-y-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center text-slate-950 font-black text-lg">
-                H
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-white p-1 border border-amber-500/30 flex items-center justify-center shadow-sm overflow-hidden shrink-0">
+                <img 
+                  src={settings.logoUrl || '/haque-graphy-logo.jpeg'} 
+                  alt="Haque Graphy — হক গ্রাফি" 
+                  className="w-full h-full object-contain"
+                />
               </div>
-              <span className="text-lg font-bold text-white font-display">Haque Graphy</span>
+              <span className="text-lg font-bold text-white font-display">Haque Graphy Studio</span>
             </div>
             <p className="text-xs leading-relaxed text-slate-400 max-w-sm font-bengali">
               {language === 'bn'

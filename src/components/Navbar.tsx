@@ -51,19 +51,20 @@ export const Navbar: React.FC = () => {
             setCurrentView('home');
             setMobileMenuOpen(false);
           }}
-          className="group flex items-center gap-2.5 text-left whitespace-nowrap shrink-0 focus:outline-none"
+          className="group flex items-center gap-3 text-left whitespace-nowrap shrink-0 focus:outline-none"
         >
-          <div className="w-9 h-9 rounded-md bg-gradient-to-br from-amber-400 via-amber-500 to-amber-700 flex items-center justify-center text-slate-950 font-black text-xl shadow-md shadow-amber-500/20 group-hover:scale-105 transition-transform">
-            H
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-white p-1 border border-amber-500/30 flex items-center justify-center shadow-md shadow-amber-500/10 group-hover:scale-105 group-hover:border-amber-400 transition-all overflow-hidden shrink-0">
+            <img 
+              src={settings.logoUrl || '/haque-graphy-logo.jpeg'} 
+              alt="Haque Graphy — হক গ্রাফি" 
+              className="w-full h-full object-contain"
+            />
           </div>
           <div>
-            <div className="text-xl font-bold tracking-tight text-white flex items-center gap-1.5 font-display">
-              <span>Haque Graphy</span>
-              <span className="text-[10px] text-amber-400 border border-amber-500/30 px-1 py-0.2 rounded font-sans uppercase tracking-widest font-semibold">
-                Studio
-              </span>
+            <div className="text-lg sm:text-xl font-bold tracking-tight text-white font-display">
+              Haque Graphy Studio
             </div>
-            <div className="text-[11px] text-slate-400 font-bengali leading-none">
+            <div className="text-[11px] text-slate-400 font-bengali leading-none mt-0.5">
               {language === 'bn' ? settings.taglineBn : settings.tagline}
             </div>
           </div>

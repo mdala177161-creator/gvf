@@ -1,9 +1,9 @@
 import { Product, Order, SiteSettings, OrderStatus } from '../types';
 import { INITIAL_PRODUCTS, INITIAL_ORDERS, INITIAL_SETTINGS } from '../data/mockData';
 
-const PRODUCTS_KEY = 'haque_graphy_products_v1';
-const ORDERS_KEY = 'haque_graphy_orders_v1';
-const SETTINGS_KEY = 'haque_graphy_settings_v1';
+const PRODUCTS_KEY = 'haque_graphy_products_v3';
+const ORDERS_KEY = 'haque_graphy_orders_v3';
+const SETTINGS_KEY = 'haque_graphy_settings_v3';
 const VISITS_KEY = 'haque_graphy_visits_count';
 
 export const storageService = {
@@ -12,7 +12,23 @@ export const storageService = {
     try {
       const stored = localStorage.getItem(PRODUCTS_KEY);
       if (stored) {
-        return JSON.parse(stored);
+        const parsed: Product[] = JSON.parse(stored);
+        // Ensure all Cloudinary products are included at the top
+        const cldIds = ['prod-cld-1', 'prod-cld-2', 'prod-cld-3', 'prod-cld-4', 'prod-hd-62'];
+        let updated = false;
+        for (const id of cldIds.reverse()) {
+          if (!parsed.some(p => p.id === id)) {
+            const item = INITIAL_PRODUCTS.find(p => p.id === id);
+            if (item) {
+              parsed.unshift(item);
+              updated = true;
+            }
+          }
+        }
+        if (updated) {
+          localStorage.setItem(PRODUCTS_KEY, JSON.stringify(parsed));
+        }
+        return parsed;
       }
     } catch {
       // Fallback
@@ -160,7 +176,21 @@ export const storageService = {
     try {
       const stored = localStorage.getItem(SETTINGS_KEY);
       if (stored) {
-        return JSON.parse(stored);
+        const parsed: SiteSettings = JSON.parse(stored);
+        if (parsed.contactEmail === 'contact@haquegraphy.com' || parsed.whatsappNumber === '+8801712345678') {
+          parsed.contactEmail = 'haquegraphydesign@gmail.com';
+          parsed.whatsappNumber = '+8801792124279';
+          parsed.studioAddress = 'Machum Bazar, Birshree, Zakiganj, Sylhet, Bangladesh';
+          parsed.studioAddressBn = 'মাছুম বাজার, বীরশ্রী, জকিগঞ্জ, সিলেট, বাংলাদেশ';
+          parsed.bkashNumber = '01792-124279 (Personal / Send Money)';
+          parsed.nagadNumber = '01792-124279 (Personal / Send Money)';
+          localStorage.setItem(SETTINGS_KEY, JSON.stringify(parsed));
+        }
+        if (!parsed.logoUrl) {
+          parsed.logoUrl = '/haque-graphy-logo.jpeg';
+          localStorage.setItem(SETTINGS_KEY, JSON.stringify(parsed));
+        }
+        return parsed;
       }
     } catch {
       // Fallback
