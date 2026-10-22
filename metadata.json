@@ -1,0 +1,7 @@
+{
+  "name": "Haque Graphy",
+  "description": "Haque Graphy — রুচিশীল ডিজাইন ও নিখুঁত প্রিন্ট. Premium digital design marketplace for PLP, PSD, AI, EPS, and print templates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
